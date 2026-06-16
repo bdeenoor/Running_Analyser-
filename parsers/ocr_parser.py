@@ -12,17 +12,31 @@ from PIL import Image, ImageEnhance
 # ── OCR reader singleton ──────────────────────────────────────────────────────
 
 _ocr_reader = None
+_ocr_init_attempted = False
+
+try:
+    import easyocr as _easyocr_module
+    OCR_AVAILABLE = True
+except Exception:
+    _easyocr_module = None
+    OCR_AVAILABLE = False
 
 
 def get_ocr_reader():
-    global _ocr_reader
-    if _ocr_reader is None:
-        try:
-            import easyocr
-            gpu = os.getenv("EASYOCR_GPU", "false").lower() == "true"
-            _ocr_reader = easyocr.Reader(["en"], gpu=gpu, verbose=False)
-        except ImportError:
-            raise ImportError("easyocr is required. Install with: pip install easyocr")
+    """Return EasyOCR reader, or None if unavailable (import error or OOM)."""
+    global _ocr_reader, _ocr_init_attempted
+    if _ocr_reader is not None:
+        return _ocr_reader
+    if _ocr_init_attempted:
+        return None
+    _ocr_init_attempted = True
+    if not OCR_AVAILABLE:
+        return None
+    try:
+        gpu = os.getenv("EASYOCR_GPU", "false").lower() == "true"
+        _ocr_reader = _easyocr_module.Reader(["en"], gpu=gpu, verbose=False)
+    except Exception:
+        _ocr_reader = None
     return _ocr_reader
 
 
@@ -331,6 +345,16 @@ def parse_screenshots(image_files: list) -> dict:
     raw_extractions = {}
     confidence_notes = []
 
+    if get_ocr_reader() is None:
+        return {
+            "planned_segments": None,
+            "laps": None,
+            "summary_metrics": {},
+            "raw_extractions": {},
+            "confidence_notes": [],
+            "ocr_available": False,
+        }
+
     for i, image_file in enumerate(image_files):
         try:
             ocr_results = _ocr_image(image_file)
@@ -394,4 +418,5 @@ def parse_screenshots(image_files: list) -> dict:
         "summary_metrics": summary_metrics,
         "raw_extractions": raw_extractions,
         "confidence_notes": confidence_notes,
+        "ocr_available": True,
     }

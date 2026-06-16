@@ -232,26 +232,31 @@ with tab1:
                     files_bytes = [f.read() for f in img_files]
                     ocr_result = _cached_parse_screenshots(files_bytes)
 
-                    if ocr_result.get("planned_segments") is not None:
-                        st.session_state["planned_segments"] = ocr_result["planned_segments"]
-                    if ocr_result.get("laps") is not None:
-                        if st.session_state.get("laps") is None:
-                            st.session_state["laps"] = ocr_result["laps"]
-                    if ocr_result.get("summary_metrics"):
-                        st.session_state["summary_metrics"].update(ocr_result["summary_metrics"])
+                    if not ocr_result.get("ocr_available", True):
+                        st.warning(
+                            "⚠️ OCR is unavailable on this deployment (insufficient memory or "
+                            "EasyOCR not installed). Please enter your workout plan and lap data "
+                            "manually in the **Data Review** tab."
+                        )
+                    else:
+                        if ocr_result.get("planned_segments") is not None:
+                            st.session_state["planned_segments"] = ocr_result["planned_segments"]
+                        if ocr_result.get("laps") is not None:
+                            if st.session_state.get("laps") is None:
+                                st.session_state["laps"] = ocr_result["laps"]
+                        if ocr_result.get("summary_metrics"):
+                            st.session_state["summary_metrics"].update(ocr_result["summary_metrics"])
 
-                    st.session_state["ocr_raw_text"] = ocr_result.get("raw_extractions", {})
-                    st.session_state["ocr_confidence_notes"] = ocr_result.get("confidence_notes", [])
+                        st.session_state["ocr_raw_text"] = ocr_result.get("raw_extractions", {})
+                        st.session_state["ocr_confidence_notes"] = ocr_result.get("confidence_notes", [])
 
-                    src = st.session_state.get("source")
-                    st.session_state["source"] = "both" if src == "gpx" else "ocr"
+                        src = st.session_state.get("source")
+                        st.session_state["source"] = "both" if src == "gpx" else "ocr"
 
-                    for note in ocr_result.get("confidence_notes", []):
-                        st.info(note)
+                        for note in ocr_result.get("confidence_notes", []):
+                            st.info(note)
 
-                    run_full_analysis()
-                except ImportError:
-                    st.error("❌ EasyOCR not installed. Run: `pip install easyocr`")
+                        run_full_analysis()
                 except Exception as e:
                     st.error(f"❌ OCR error: {e}")
 
