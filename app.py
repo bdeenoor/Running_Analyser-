@@ -33,6 +33,8 @@ INITIAL_STATE = {
     "coaching_language": "he",
     "analysis_done": False,
     "ocr_confidence_notes": [],
+    "screenshots_status": None,
+    "last_screenshots_hash": None,
 }
 
 for key, default in INITIAL_STATE.items():
@@ -219,6 +221,31 @@ with tab1:
 
     with col_img:
         st.markdown("#### Screenshots")
+
+        # Show persistent status banner from previous upload (survives rerun)
+        scr_status = st.session_state.get("screenshots_status")
+        if scr_status:
+            if scr_status.get("ok") is True:
+                n_seg = scr_status.get("segments", 0)
+                n_lap = scr_status.get("laps", 0)
+                parts = []
+                if n_seg:
+                    parts.append(f"{n_seg} segment{'s' if n_seg != 1 else ''}")
+                if n_lap:
+                    parts.append(f"{n_lap} lap{'s' if n_lap != 1 else ''}")
+                if parts:
+                    st.success(f"✅ Extracted {', '.join(parts)} — review and edit in the **Data Review** tab →")
+                else:
+                    st.warning("⚠️ Screenshots processed but no data extracted. Check image quality or enter data manually in **Data Review**.")
+            elif scr_status.get("reason") == "ocr_unavailable":
+                st.info(
+                    "ℹ️ OCR is not available on this server (memory limit). "
+                    "Your screenshots were accepted — please enter your workout plan and lap data "
+                    "manually in the **Data Review** tab →"
+                )
+            else:
+                st.error(f"❌ OCR error: {scr_status.get('msg', 'unknown error')}")
+
         img_files = st.file_uploader(
             "Upload watch/app screenshots (plan, laps, summary, HR, pace)",
             type=["png", "jpg", "jpeg"],
@@ -227,38 +254,41 @@ with tab1:
         )
 
         if img_files:
-            with st.spinner("Running OCR on screenshots…"):
-                try:
-                    files_bytes = [f.read() for f in img_files]
-                    ocr_result = _cached_parse_screenshots(files_bytes)
+            # Hash guard — only process if files changed (prevents rerun loop)
+            files_hash = tuple(f.name + str(f.size) for f in img_files)
+            if st.session_state.get("last_screenshots_hash") != files_hash:
+                with st.spinner("Running OCR on screenshots…"):
+                    try:
+                        files_bytes = [f.read() for f in img_files]
+                        ocr_result = _cached_parse_screenshots(files_bytes)
 
-                    if not ocr_result.get("ocr_available", True):
-                        st.warning(
-                            "⚠️ OCR is unavailable on this deployment (insufficient memory or "
-                            "EasyOCR not installed). Please enter your workout plan and lap data "
-                            "manually in the **Data Review** tab."
-                        )
-                    else:
-                        if ocr_result.get("planned_segments") is not None:
-                            st.session_state["planned_segments"] = ocr_result["planned_segments"]
-                        if ocr_result.get("laps") is not None:
-                            if st.session_state.get("laps") is None:
-                                st.session_state["laps"] = ocr_result["laps"]
-                        if ocr_result.get("summary_metrics"):
-                            st.session_state["summary_metrics"].update(ocr_result["summary_metrics"])
+                        if not ocr_result.get("ocr_available", True):
+                            st.session_state["screenshots_status"] = {"ok": None, "reason": "ocr_unavailable"}
+                        else:
+                            n_seg, n_lap = 0, 0
+                            if ocr_result.get("planned_segments") is not None:
+                                st.session_state["planned_segments"] = ocr_result["planned_segments"]
+                                n_seg = len(ocr_result["planned_segments"])
+                            if ocr_result.get("laps") is not None:
+                                if st.session_state.get("laps") is None:
+                                    st.session_state["laps"] = ocr_result["laps"]
+                                n_lap = len(ocr_result["laps"])
+                            if ocr_result.get("summary_metrics"):
+                                st.session_state["summary_metrics"].update(ocr_result["summary_metrics"])
 
-                        st.session_state["ocr_raw_text"] = ocr_result.get("raw_extractions", {})
-                        st.session_state["ocr_confidence_notes"] = ocr_result.get("confidence_notes", [])
+                            st.session_state["ocr_raw_text"] = ocr_result.get("raw_extractions", {})
+                            st.session_state["ocr_confidence_notes"] = ocr_result.get("confidence_notes", [])
+                            st.session_state["source"] = "both" if st.session_state.get("source") == "gpx" else "ocr"
+                            st.session_state["screenshots_status"] = {"ok": True, "segments": n_seg, "laps": n_lap}
+                            run_full_analysis()
 
-                        src = st.session_state.get("source")
-                        st.session_state["source"] = "both" if src == "gpx" else "ocr"
+                        st.session_state["last_screenshots_hash"] = files_hash
+                        st.rerun()
 
-                        for note in ocr_result.get("confidence_notes", []):
-                            st.info(note)
-
-                        run_full_analysis()
-                except Exception as e:
-                    st.error(f"❌ OCR error: {e}")
+                    except Exception as e:
+                        st.session_state["screenshots_status"] = {"ok": False, "reason": "error", "msg": str(e)}
+                        st.session_state["last_screenshots_hash"] = files_hash
+                        st.rerun()
 
     # ── Quick stats after upload ──────────────────────────────────────────────
     sm = st.session_state.get("summary_metrics", {})
