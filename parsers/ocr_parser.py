@@ -9,70 +9,115 @@ import pandas as pd
 from PIL import Image, ImageEnhance
 
 
-# ── OCR reader singleton ──────────────────────────────────────────────────────
+# ── OCR backend detection ─────────────────────────────────────────────────────
+# Priority: EasyOCR (best accuracy) → pytesseract (lightweight, works on free hosting)
 
 _ocr_reader = None
 _ocr_init_attempted = False
 
 try:
     import easyocr as _easyocr_module
-    OCR_AVAILABLE = True
+    _EASYOCR_IMPORTABLE = True
 except Exception:
     _easyocr_module = None
-    OCR_AVAILABLE = False
+    _EASYOCR_IMPORTABLE = False
+
+try:
+    import pytesseract as _pytesseract_module
+    from PIL import Image as _PIL_Image
+    _TESSERACT_IMPORTABLE = True
+except Exception:
+    _pytesseract_module = None
+    _TESSERACT_IMPORTABLE = False
 
 
-def get_ocr_reader():
-    """Return EasyOCR reader, or None if unavailable (import error or OOM)."""
+def _get_backend() -> str:
+    """Return which OCR backend to use: 'easyocr', 'tesseract', or 'none'."""
     global _ocr_reader, _ocr_init_attempted
     if _ocr_reader is not None:
-        return _ocr_reader
-    if _ocr_init_attempted:
-        return None
-    _ocr_init_attempted = True
-    if not OCR_AVAILABLE:
-        return None
-    try:
-        gpu = os.getenv("EASYOCR_GPU", "false").lower() == "true"
-        _ocr_reader = _easyocr_module.Reader(["en"], gpu=gpu, verbose=False)
-    except Exception:
-        _ocr_reader = None
-    return _ocr_reader
+        return "easyocr"
+    if not _ocr_init_attempted and _EASYOCR_IMPORTABLE:
+        _ocr_init_attempted = True
+        try:
+            gpu = os.getenv("EASYOCR_GPU", "false").lower() == "true"
+            _ocr_reader = _easyocr_module.Reader(["en"], gpu=gpu, verbose=False)
+            return "easyocr"
+        except Exception:
+            _ocr_reader = None
+    if _TESSERACT_IMPORTABLE:
+        try:
+            _pytesseract_module.get_tesseract_version()
+            return "tesseract"
+        except Exception:
+            pass
+    return "none"
+
+
+# Keep for backward compatibility
+def get_ocr_reader():
+    backend = _get_backend()
+    return _ocr_reader if backend == "easyocr" else (True if backend == "tesseract" else None)
+
+OCR_AVAILABLE = _EASYOCR_IMPORTABLE or _TESSERACT_IMPORTABLE
 
 
 # ── Image preprocessing ───────────────────────────────────────────────────────
 
-def _preprocess_image(image_file) -> np.ndarray:
-    """Open, resize if needed, boost contrast, convert to numpy."""
+def _open_pil_image(image_file) -> "Image":
+    """Open image file as PIL Image."""
     if isinstance(image_file, bytes):
         import io
-        img = Image.open(io.BytesIO(image_file))
-    else:
-        img = Image.open(image_file)
+        return Image.open(io.BytesIO(image_file)).convert("RGB")
+    return Image.open(image_file).convert("RGB")
 
-    img = img.convert("RGB")
 
-    # Resize if too large (keep aspect ratio)
+def _preprocess_pil(img: "Image") -> "Image":
+    """Resize if too large, boost contrast for dark watch screens."""
     max_width = 2000
     if img.width > max_width:
         ratio = max_width / img.width
-        new_size = (max_width, int(img.height * ratio))
-        img = img.resize(new_size, Image.LANCZOS)
+        img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
+    return ImageEnhance.Contrast(img).enhance(1.5)
 
-    # Contrast boost for dark watch screens
-    enhancer = ImageEnhance.Contrast(img)
-    img = enhancer.enhance(1.5)
 
-    return np.array(img)
+def _preprocess_image(image_file) -> np.ndarray:
+    """Legacy helper — returns numpy array for EasyOCR."""
+    return np.array(_preprocess_pil(_open_pil_image(image_file)))
+
+
+def _ocr_image_easyocr(image_file) -> list[tuple]:
+    """EasyOCR backend → [(bbox, text, confidence), ...]."""
+    img_array = _preprocess_image(image_file)
+    results = _ocr_reader.readtext(img_array, detail=1)
+    return [(bbox, text, conf) for bbox, text, conf in results if conf > 0.3]
+
+
+def _ocr_image_tesseract(image_file) -> list[tuple]:
+    """Tesseract backend → same [(bbox, text, confidence), ...] format."""
+    img = _preprocess_pil(_open_pil_image(image_file))
+    data = _pytesseract_module.image_to_data(img, output_type=_pytesseract_module.Output.DICT)
+    results = []
+    for i, text in enumerate(data["text"]):
+        text = text.strip()
+        if not text:
+            continue
+        conf = float(data["conf"][i])
+        if conf < 30:  # tesseract uses 0-100, equivalent to 0.3 in easyocr
+            continue
+        left, top, w, h = data["left"][i], data["top"][i], data["width"][i], data["height"][i]
+        bbox = [[left, top], [left + w, top], [left + w, top + h], [left, top + h]]
+        results.append((bbox, text, conf / 100.0))
+    return results
 
 
 def _ocr_image(image_file) -> list[tuple]:
-    """Run OCR and return list of (bbox, text, confidence) tuples."""
-    reader = get_ocr_reader()
-    img_array = _preprocess_image(image_file)
-    results = reader.readtext(img_array, detail=1)
-    # Filter low-confidence results
-    return [(bbox, text, conf) for bbox, text, conf in results if conf > 0.3]
+    """Run OCR with best available backend. Returns [(bbox, text, confidence), ...]."""
+    backend = _get_backend()
+    if backend == "easyocr":
+        return _ocr_image_easyocr(image_file)
+    if backend == "tesseract":
+        return _ocr_image_tesseract(image_file)
+    raise RuntimeError("No OCR backend available (EasyOCR and Tesseract both unavailable)")
 
 
 # ── Screenshot classifier ─────────────────────────────────────────────────────
@@ -345,7 +390,7 @@ def parse_screenshots(image_files: list) -> dict:
     raw_extractions = {}
     confidence_notes = []
 
-    if get_ocr_reader() is None:
+    if _get_backend() == "none":
         return {
             "planned_segments": None,
             "laps": None,
