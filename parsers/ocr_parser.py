@@ -14,6 +14,8 @@ from PIL import Image, ImageEnhance
 
 _ocr_reader = None
 _ocr_init_attempted = False
+_detected_backend = None   # cached after first successful detection
+_backend_error = None      # last error message if no backend found
 
 try:
     import easyocr as _easyocr_module
@@ -32,24 +34,44 @@ except Exception:
 
 
 def _get_backend() -> str:
-    """Return which OCR backend to use: 'easyocr', 'tesseract', or 'none'."""
-    global _ocr_reader, _ocr_init_attempted
-    if _ocr_reader is not None:
-        return "easyocr"
-    if not _ocr_init_attempted and _EASYOCR_IMPORTABLE:
+    """Return which OCR backend to use: 'tesseract', 'easyocr', or 'none'.
+
+    Tesseract is checked first — it's lightweight (no model download) and
+    works on Streamlit Cloud free tier via packages.txt. EasyOCR is only
+    tried when Tesseract binary is not installed (e.g. local dev without
+    tesseract-ocr apt package). Set EASYOCR_ENABLED=false to skip EasyOCR.
+    """
+    global _detected_backend, _backend_error, _ocr_reader, _ocr_init_attempted
+
+    if _detected_backend is not None:
+        return _detected_backend
+
+    errors = []
+
+    # 1. Tesseract — fast, no model download, works on Streamlit Cloud
+    if _TESSERACT_IMPORTABLE:
+        try:
+            _pytesseract_module.get_tesseract_version()
+            _detected_backend = "tesseract"
+            return "tesseract"
+        except Exception as e:
+            errors.append(f"Tesseract binary not found: {e}")
+
+    # 2. EasyOCR — accurate but heavy (~200 MB model download on first use)
+    easyocr_enabled = os.getenv("EASYOCR_ENABLED", "true").lower() != "false"
+    if not _ocr_init_attempted and _EASYOCR_IMPORTABLE and easyocr_enabled:
         _ocr_init_attempted = True
         try:
             gpu = os.getenv("EASYOCR_GPU", "false").lower() == "true"
             _ocr_reader = _easyocr_module.Reader(["en"], gpu=gpu, verbose=False)
+            _detected_backend = "easyocr"
             return "easyocr"
-        except Exception:
+        except Exception as e:
             _ocr_reader = None
-    if _TESSERACT_IMPORTABLE:
-        try:
-            _pytesseract_module.get_tesseract_version()
-            return "tesseract"
-        except Exception:
-            pass
+            errors.append(f"EasyOCR failed to load: {e}")
+
+    _backend_error = "; ".join(errors) if errors else "pytesseract and easyocr not importable"
+    _detected_backend = "none"
     return "none"
 
 
@@ -390,7 +412,8 @@ def parse_screenshots(image_files: list) -> dict:
     raw_extractions = {}
     confidence_notes = []
 
-    if _get_backend() == "none":
+    backend = _get_backend()
+    if backend == "none":
         return {
             "planned_segments": None,
             "laps": None,
@@ -398,7 +421,10 @@ def parse_screenshots(image_files: list) -> dict:
             "raw_extractions": {},
             "confidence_notes": [],
             "ocr_available": False,
+            "backend_error": _backend_error,
         }
+
+    confidence_notes.append(f"OCR backend: {backend}")
 
     for i, image_file in enumerate(image_files):
         try:

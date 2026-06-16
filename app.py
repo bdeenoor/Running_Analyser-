@@ -238,11 +238,14 @@ with tab1:
                 else:
                     st.warning("⚠️ Screenshots processed but no data extracted. Check image quality or enter data manually in **Data Review**.")
             elif scr_status.get("reason") == "ocr_unavailable":
-                st.info(
-                    "ℹ️ OCR is not available on this server (memory limit). "
-                    "Your screenshots were accepted — please enter your workout plan and lap data "
-                    "manually in the **Data Review** tab →"
+                detail = scr_status.get("backend_error", "")
+                msg = (
+                    "ℹ️ OCR is not available on this deployment. "
+                    "Please enter your workout plan and lap data manually in the **Data Review** tab →"
                 )
+                if detail:
+                    msg += f"\n\n_(Technical detail: {detail})_"
+                st.info(msg)
             else:
                 st.error(f"❌ OCR error: {scr_status.get('msg', 'unknown error')}")
 
@@ -263,7 +266,11 @@ with tab1:
                         ocr_result = _cached_parse_screenshots(files_bytes)
 
                         if not ocr_result.get("ocr_available", True):
-                            st.session_state["screenshots_status"] = {"ok": None, "reason": "ocr_unavailable"}
+                            st.session_state["screenshots_status"] = {
+                                "ok": None,
+                                "reason": "ocr_unavailable",
+                                "backend_error": ocr_result.get("backend_error", ""),
+                            }
                         else:
                             n_seg, n_lap = 0, 0
                             if ocr_result.get("planned_segments") is not None:
