@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: running-analyser
+    runtime: python
+    region: frankfurt  # change to: oregon, ohio, singapore, virginia
+    plan: standard     # standard = 2 GB RAM (required for EasyOCR)
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: EASYOCR_GPU
+        value: false
+      - key: PYTHON_VERSION
+        value: "3.11.0"
