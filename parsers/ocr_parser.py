@@ -264,17 +264,163 @@ def _parse_segment_line(line: str) -> Optional[dict]:
 
 # ── Planned workout extractor ─────────────────────────────────────────────────
 
-def _extract_planned_workout(ocr_results: list) -> pd.DataFrame:
-    texts = [text for _, text, _ in ocr_results]
+def _reconstruct_lines_from_ocr(ocr_results: list) -> list[str]:
+    """Group OCR tokens by Y-position into visual text lines."""
+    rows = _group_by_row(ocr_results, y_tolerance=15)
+    lines = []
+    for row in rows:
+        line = " ".join(t.strip() for _, t, _ in row).strip()
+        # Normalize "07 : 22" → "07:22" (Tesseract sometimes splits on colons)
+        line = re.sub(r'(\d)\s*:\s*(\d)', r'\1:\2', line)
+        if line:
+            lines.append(line)
+    return lines
+
+
+def _join_wrapped_lines(lines: list[str]) -> list[str]:
+    """Join lines where pace was split: '04:01 min/' + 'km' → '04:01 min/km'."""
+    result = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if i + 1 < len(lines):
+            next_stripped = lines[i + 1].strip().lower()
+            if line.rstrip().endswith('/') and next_stripped in ('km', '/km'):
+                line = line.rstrip() + next_stripped
+                i += 2
+                result.append(line)
+                continue
+        result.append(line)
+        i += 1
+    return result
+
+
+def _parse_duration_from_text(text: str) -> Optional[int]:
+    """Extract duration in seconds from text like '20 min', '2 min'."""
+    m = re.search(r'(\d{1,3})\s*min\b', text, re.IGNORECASE)
+    if m:
+        return int(m.group(1)) * 60
+    # MM:SS form not followed by /km (to avoid matching paces)
+    m = re.search(r'(\d{1,2}):(\d{2})(?!\s*/)', text)
+    if m:
+        mins, secs = int(m.group(1)), int(m.group(2))
+        if secs < 60:
+            return mins * 60 + secs
+    return None
+
+
+def _find_next_duration_pace(lines: list[str], from_idx: int) -> tuple:
+    """Scan forward from from_idx+1 to find duration and pace for a workout segment."""
+    duration_s = None
+    pace = None
+    scan_end = min(from_idx + 6, len(lines))
+    for li in range(from_idx + 1, scan_end):
+        line = lines[li]
+        line_lower = line.lower()
+        # After first line, stop when we hit another segment label
+        if li > from_idx + 1 and re.search(
+            r'\b(hard|easy|recovery|repeat|warm|cool)\b', line_lower
+        ):
+            break
+        if duration_s is None:
+            duration_s = _parse_duration_from_text(line)
+        if pace is None:
+            pace = _parse_pace_string(line)
+    return duration_s, pace
+
+
+def _parse_repeat_block(lines: list[str], repeat_idx: int) -> tuple:
+    """
+    Extract Hard/Easy sub-segments from a 'Repeat N times' block.
+    Returns (sub_segments_list, next_line_index).
+    """
+    sub_segs = []
+    i = repeat_idx + 1
+    while i < len(lines):
+        line = lines[i].strip()
+        line_lower = line.lower()
+        # Stop at next top-level item
+        if re.search(r'\b(repeat\s+\d+|warm[\s._-]?up|cool[\s._-]?down)\b', line_lower):
+            break
+        if re.search(r'\bhard\b', line_lower):
+            dur, pace = _find_next_duration_pace(lines, i)
+            sub_segs.append({
+                'name': 'Hard', 'type': 'hard',
+                'duration_s': dur, 'target_pace_min_km': pace,
+            })
+        elif re.search(r'\b(easy|recovery|jog)\b', line_lower):
+            dur, pace = _find_next_duration_pace(lines, i)
+            sub_segs.append({
+                'name': 'Easy', 'type': 'easy',
+                'duration_s': dur, 'target_pace_min_km': pace,
+            })
+        i += 1
+    return sub_segs, i
+
+
+def _extract_planned_workout_trainingpeaks(lines: list[str]) -> pd.DataFrame:
+    """State-machine parser for TrainingPeaks hierarchical workout format."""
     segments = []
     seg_num = 1
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        line_lower = line.lower()
 
+        if re.search(r'\bwarm[\s._-]?up\b', line_lower):
+            dur, pace = _find_next_duration_pace(lines, i)
+            if dur is not None:
+                segments.append({
+                    'segment_num': seg_num, 'name': 'Warm Up', 'type': 'warmup',
+                    'duration_s': dur, 'target_pace_min_km': pace,
+                })
+                seg_num += 1
+
+        elif re.search(r'\bcool[\s._-]?down\b', line_lower):
+            dur, pace = _find_next_duration_pace(lines, i)
+            if dur is not None:
+                segments.append({
+                    'segment_num': seg_num, 'name': 'Cool Down', 'type': 'cooldown',
+                    'duration_s': dur, 'target_pace_min_km': pace,
+                })
+                seg_num += 1
+
+        else:
+            m_repeat = re.search(r'\brepeat\s+(\d+)\s+times?\b', line_lower)
+            if m_repeat:
+                n = int(m_repeat.group(1))
+                sub_segs, next_i = _parse_repeat_block(lines, i)
+                for _ in range(n):
+                    for sub in sub_segs:
+                        if sub['duration_s'] is not None:
+                            segments.append({'segment_num': seg_num, **sub})
+                            seg_num += 1
+                i = next_i
+                continue
+
+        i += 1
+
+    if not segments:
+        return pd.DataFrame()
+    return pd.DataFrame(segments)[['segment_num', 'name', 'type', 'duration_s', 'target_pace_min_km']]
+
+
+def _extract_planned_workout(ocr_results: list) -> pd.DataFrame:
+    texts = [text for _, text, _ in ocr_results]
+    combined = " ".join(texts).lower()
+
+    if "repeat" in combined:
+        lines = _reconstruct_lines_from_ocr(ocr_results)
+        lines = _join_wrapped_lines(lines)
+        return _extract_planned_workout_trainingpeaks(lines)
+
+    segments = []
+    seg_num = 1
     for text in texts:
         parsed = _parse_segment_line(text)
         if parsed:
-            name = text[:40].strip()
             parsed["segment_num"] = seg_num
-            parsed["name"] = name
+            parsed["name"] = text[:40].strip()
             segments.append(parsed)
             seg_num += 1
 
@@ -426,6 +572,9 @@ def parse_screenshots(image_files: list) -> dict:
 
     confidence_notes.append(f"OCR backend: {backend}")
 
+    all_plan_lines: list[str] = []
+    plan_img_count = 0
+
     for i, image_file in enumerate(image_files):
         try:
             ocr_results = _ocr_image(image_file)
@@ -441,14 +590,12 @@ def parse_screenshots(image_files: list) -> dict:
         screen_type = _classify_screenshot_type(ocr_results)
 
         if screen_type == "planned_workout":
-            extracted = _extract_planned_workout(ocr_results)
-            if not extracted.empty:
-                planned_segments = extracted
-                confidence_notes.append(
-                    f"{img_name}: Detected workout plan with {len(extracted)} segments (review before use)."
-                )
-            else:
-                confidence_notes.append(f"{img_name}: Detected as plan but could not parse segments.")
+            img_lines = _reconstruct_lines_from_ocr(ocr_results)
+            all_plan_lines.extend(img_lines)
+            plan_img_count += 1
+            confidence_notes.append(
+                f"{img_name}: Detected as workout plan ({len(img_lines)} lines, accumulating)."
+            )
 
         elif screen_type == "lap_summary":
             extracted = _extract_lap_table(ocr_results)
@@ -476,6 +623,37 @@ def parse_screenshots(image_files: list) -> dict:
             summ = _extract_summary_values(ocr_results)
             summary_metrics.update(summ)
             confidence_notes.append(f"{img_name}: Unknown type — tried all extractors.")
+
+    # Merge and parse plan lines accumulated from all plan screenshots
+    if all_plan_lines:
+        merged_lines = _join_wrapped_lines(all_plan_lines)
+        combined_text = " ".join(merged_lines).lower()
+        if "repeat" in combined_text:
+            extracted = _extract_planned_workout_trainingpeaks(merged_lines)
+        else:
+            segs: list[dict] = []
+            sn = 1
+            for line in merged_lines:
+                parsed = _parse_segment_line(line)
+                if parsed:
+                    parsed["segment_num"] = sn
+                    parsed["name"] = line[:40].strip()
+                    segs.append(parsed)
+                    sn += 1
+            extracted = (
+                pd.DataFrame(segs)[["segment_num", "name", "type", "duration_s", "target_pace_min_km"]]
+                if segs else pd.DataFrame()
+            )
+        if not extracted.empty:
+            planned_segments = extracted
+            confidence_notes.append(
+                f"Extracted {len(extracted)} planned segments from "
+                f"{plan_img_count} plan screenshot(s)."
+            )
+        else:
+            confidence_notes.append(
+                "Plan screenshot(s) detected but no segments could be parsed."
+            )
 
     if planned_segments.empty and laps.empty and not summary_metrics:
         confidence_notes.append(
