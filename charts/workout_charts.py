@@ -355,7 +355,11 @@ def make_planned_vs_actual(matched_segments: pd.DataFrame) -> go.Figure:
         return _apply_dark_theme(fig)
 
     seg_names = matched_segments["name"].tolist()
-    planned = matched_segments["planned_pace_min_km"].tolist()
+    # Use coach override pace when available, fall back to OCR/entered target
+    if "effective_target_pace_min_km" in matched_segments.columns:
+        planned = matched_segments["effective_target_pace_min_km"].tolist()
+    else:
+        planned = matched_segments["planned_pace_min_km"].tolist()
     actual = matched_segments["actual_pace_min_km"].tolist()
     deltas = matched_segments["delta_pace_sec_km"].tolist()
     confidences = matched_segments.get("confidence", ["medium"] * len(matched_segments)).tolist()

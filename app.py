@@ -375,7 +375,8 @@ with tab2:
 
         # Ensure all required columns present
         for col, default in [("segment_num", 1), ("name", ""), ("type", "easy"),
-                              ("duration_s", 300), ("target_pace_min_km", None)]:
+                              ("duration_s", 300), ("target_pace_min_km", None),
+                              ("coach_target_pace_min_km", None), ("coach_notes", "")]:
             if col not in planned.columns:
                 planned[col] = default
 
@@ -393,7 +394,17 @@ with tab2:
                 ),
                 "duration_s": st.column_config.NumberColumn("Duration (s)", min_value=1),
                 "target_pace_min_km": st.column_config.NumberColumn(
-                    "Target Pace (min/km)", min_value=2.0, max_value=30.0, format="%.2f"
+                    "OCR Pace (min/km)", min_value=2.0, max_value=30.0, format="%.2f",
+                    help="Target pace extracted from screenshot. Edit below to override with coach instruction."
+                ),
+                "coach_target_pace_min_km": st.column_config.NumberColumn(
+                    "Coach Pace Override (min/km)", min_value=2.0, max_value=30.0, format="%.2f",
+                    help="Leave blank to use OCR pace. Set this when your coach gave a different pace target."
+                ),
+                "coach_notes": st.column_config.TextColumn(
+                    "Coach Notes",
+                    help="Optional coach instructions for this segment (e.g. 'stay relaxed', 'negative split').",
+                    max_chars=200,
                 ),
             },
         )

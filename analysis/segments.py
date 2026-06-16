@@ -197,17 +197,44 @@ def _match_timestamp(
 
 # ── Shared row builder ────────────────────────────────────────────────────────
 
+def _effective_target_pace(planned_seg) -> "float | None":
+    """Return coach override pace if set, otherwise OCR/entered target pace."""
+    if hasattr(planned_seg, "get"):
+        override = planned_seg.get("coach_target_pace_min_km")
+        if override is not None:
+            try:
+                v = float(override)
+                if math.isfinite(v) and v > 0:
+                    return v
+            except (TypeError, ValueError):
+                pass
+        base = planned_seg.get("target_pace_min_km")
+    else:
+        override = planned_seg.get("coach_target_pace_min_km") if hasattr(planned_seg, "get") else None
+        base = planned_seg.get("target_pace_min_km") if hasattr(planned_seg, "get") else None
+    if base is not None:
+        try:
+            v = float(base)
+            return v if math.isfinite(v) and v > 0 else None
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
 def _build_matched_row(planned_seg, actuals: dict, source: str) -> dict:
-    planned_pace = planned_seg.get("target_pace_min_km") if hasattr(planned_seg, "get") else None
+    ocr_pace = planned_seg.get("target_pace_min_km") if hasattr(planned_seg, "get") else None
+    effective_pace = _effective_target_pace(planned_seg)
     actual_pace = actuals.get("actual_pace_min_km")
-    delta = _compute_delta_pace(planned_pace, actual_pace)
+    delta = _compute_delta_pace(effective_pace, actual_pace)
+    coach_notes = planned_seg.get("coach_notes", "") if hasattr(planned_seg, "get") else ""
 
     return {
         "segment_num": planned_seg.get("segment_num", 0) if hasattr(planned_seg, "get") else planned_seg["segment_num"],
         "name": planned_seg.get("name", "") if hasattr(planned_seg, "get") else planned_seg["name"],
         "type": planned_seg.get("type", "easy") if hasattr(planned_seg, "get") else planned_seg.get("type", "easy"),
         "planned_duration_s": planned_seg.get("duration_s") if hasattr(planned_seg, "get") else planned_seg["duration_s"],
-        "planned_pace_min_km": planned_pace,
+        "planned_pace_min_km": ocr_pace,
+        "effective_target_pace_min_km": effective_pace,
         "actual_duration_s": actuals.get("actual_duration_s"),
         "actual_distance_m": actuals.get("actual_distance_m"),
         "actual_pace_min_km": actual_pace,
@@ -216,6 +243,7 @@ def _build_matched_row(planned_seg, actuals: dict, source: str) -> dict:
         "max_hr": actuals.get("max_hr"),
         "avg_cadence": actuals.get("avg_cadence"),
         "elevation_change_m": actuals.get("elevation_change_m"),
+        "coach_notes": coach_notes if isinstance(coach_notes, str) else "",
         "source": source,
         "confidence": "medium",
     }
@@ -387,6 +415,26 @@ def generate_coaching_text(
                 lines.append(f"{rtl_mark}{hard_name}: דופק ממוצע {hard_hr:.0f} {terms['bpm']}, קצב {format_pace(hard_pace)}")
             else:
                 lines.append(f"{hard_name}: avg HR {hard_hr:.0f} bpm, pace {format_pace(hard_pace)}")
+
+        # ── Coach notes per segment ───────────────────────────────────────────
+        if "coach_notes" in matched_segments.columns:
+            noted = matched_segments[matched_segments["coach_notes"].str.strip().astype(bool)]
+            if not noted.empty:
+                if language == "he":
+                    lines.append(h("coach_notes_section") if "coach_notes_section" in terms else "\n" + "─" * 40 + "\n" + rtl_mark + "🏃 הערות מאמן לקטעים\n" + "─" * 40)
+                else:
+                    lines.append("\n" + "─" * 40 + "\n🏃 COACH NOTES BY SEGMENT\n" + "─" * 40)
+                for _, row in noted.iterrows():
+                    seg_name = row.get("name", f"Segment {row.get('segment_num', '?')}")
+                    note = row["coach_notes"].strip()
+                    eff_pace = row.get("effective_target_pace_min_km")
+                    actual_pace = row.get("actual_pace_min_km")
+                    if language == "he":
+                        pace_str = f"{format_pace(eff_pace)} ← {format_pace(actual_pace)}" if eff_pace else format_pace(actual_pace)
+                        lines.append(f"{rtl_mark}📌 {seg_name} ({pace_str}): {note}")
+                    else:
+                        pace_str = f"{format_pace(eff_pace)} → {format_pace(actual_pace)}" if eff_pace else format_pace(actual_pace)
+                        lines.append(f"📌 {seg_name} ({pace_str}): {note}")
 
         # ── HR drift ─────────────────────────────────────────────────────────
         lines.append(h("hr_drift"))
