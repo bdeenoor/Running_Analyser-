@@ -148,7 +148,6 @@ def _add_segment_shading(
             opacity=0.12,
             layer="below",
             line_width=0,
-            row=row, col=col,
         )
 
         # Segment label
