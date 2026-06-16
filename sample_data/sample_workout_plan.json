@@ -1,0 +1,22 @@
+{
+  "workout_name": "Pyramid Interval Workout",
+  "date": "2024-01-15",
+  "segments": [
+    {"segment_num": 1, "name": "Warm Up", "type": "warmup", "duration_s": 1200, "target_pace_min_km": null},
+    {"segment_num": 2, "name": "Hard 2min", "type": "hard", "duration_s": 120, "target_pace_min_km": 4.5},
+    {"segment_num": 3, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 4, "name": "Hard 4min", "type": "hard", "duration_s": 240, "target_pace_min_km": 4.5},
+    {"segment_num": 5, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 6, "name": "Hard 6min", "type": "hard", "duration_s": 360, "target_pace_min_km": 4.5},
+    {"segment_num": 7, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 8, "name": "Hard 8min", "type": "hard", "duration_s": 480, "target_pace_min_km": 4.5},
+    {"segment_num": 9, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 10, "name": "Hard 6min", "type": "hard", "duration_s": 360, "target_pace_min_km": 4.5},
+    {"segment_num": 11, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 12, "name": "Hard 4min", "type": "hard", "duration_s": 240, "target_pace_min_km": 4.5},
+    {"segment_num": 13, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 14, "name": "Hard 2min", "type": "hard", "duration_s": 120, "target_pace_min_km": 4.5},
+    {"segment_num": 15, "name": "Easy 2min", "type": "easy", "duration_s": 120, "target_pace_min_km": null},
+    {"segment_num": 16, "name": "Cool Down", "type": "cooldown", "duration_s": 600, "target_pace_min_km": null}
+  ]
+}
